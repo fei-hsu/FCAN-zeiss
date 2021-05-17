@@ -125,8 +125,12 @@ class Trainer:
         self.models["resnet101"].to(self.device)
 
         # self.models["RAN"] = DeepLab_ResNet101_MSC(n_classes=21)
-        self.models["RAN"] = RAN(in_channels=2048, out_channels=21)
+        self.models["RAN"] = RAN(in_channels=2048, out_channels=128)
         self.models["RAN"].to(self.device)
+        
+        self.models["unet"] = networks.UNet(n_channels=1, n_classes=4)
+        self.models["unet"].to(self.device)
+
 
         # self.models["unet"] = networks.UNet(n_channels=1, n_classes=4)
         # self.models["unet"].to(self.device)
@@ -144,6 +148,7 @@ class Trainer:
         self.parameters_to_train += b
         '''
 
+        #self.model_optimizer = optim.SGD(self.parameters_to_train,self.opt.learning_rate,momentum=0.9,weight_decay=0.0005)
         self.model_optimizer = optim.Adam([self.parameters_to_train],
                                           self.opt.learning_rate)
 
@@ -267,6 +272,11 @@ class Trainer:
         save_image(source_img, 'source_img.png')
         save_image(target_img, 'target_img.png')
 
+        inputs = {}
+        inputs["source"] = source_img
+        inputs["target"] = target_img
+        L_RAN = self.compute_RAN_loss(inputs)
+
         # print("base_dir", self.opt.base_dir) /home/zeju/Documents/zeiss_domain_adaption/Retouch-dataset/pre_processed
         # print("list_dir", self.opt.list_dir) /home/zeju/Documents/zeiss_domain_adaption/splits/split_cirrus
 
@@ -289,6 +299,7 @@ class Trainer:
             w = 1000 * (I - self.step) / I
             L_ANN = self.compute_AAN_loss(input, source_img, target_img)
             L_ANN.backward()
+
             # print("input", input)
             # print("L_ANN", L_ANN)
             # print("input max", input.max())
@@ -468,16 +479,43 @@ class Trainer:
         return loss
 
 
-    def compute_RAN_loss(self, inputs, targets):
+    def compute_RAN_loss(self, inputs):
+        print("compute RAN loss")
+        features = {}
+
         self.models["resnet101"].layer4[2].conv3.register_forward_hook(get_activation('res5c')) # res5c
-        features = self.models["resnet101"](inputs)
-        print("features shape", features.shape)
-        output = self.models['RAN'](features)
-        print("activation", activation['res5c'].shape)
-        print(output.shape)
+        output = self.models["resnet101"](inputs["source"])
+        features["source"] = self.models['RAN'](activation['res5c'])
+   
+        
+        outputs = {}
+        pooling = SpatialPyramidPooling(levels=[1])
+        p = pooling(activation['res5c'])
+        L_seg = 0
+        '''
+        preds = self.models["unet"](p)
+        print("preds shape", preds.shape)
+        outputs["pred"] = preds
+        outputs["pred_idx"] = torch.argmax(preds, dim=1, keepdim=True)
+        target = inputs['label']
+
+        L_seg = self.compute_losses(inputs, outputs)
+        print("L_seg", L_seg)
+        '''
+        del activation['res5c']
+        output = self.models["resnet101"](inputs["target"])
+        features["target"] = self.models['RAN'](activation['res5c'])
+        #print("features target shape", features["target"].shape)
+
+
+
+        #devide input into target domain or dource domain
+        L_adv = - torch.mean(torch.log(features["target"])) - torch.mean(torch.log(1-features["source"]))
+        print("L_adv", L_adv)
+        
+        loss = L_adv - 5*L_seg
         # print("test shape", test.shape)
 
-        sys.exit()
         return loss
 
     def generate_style_image(self, inputs):
